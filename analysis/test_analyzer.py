@@ -1,19 +1,65 @@
 # test_analyzer.py
-import json
-from analyzer import analyze_finding
+import pytest
 
-findings = [
-    {"id": "V001", "type": "SQL Injection", "cwe": "CWE-89", "language": "python",
-     "line": 14, "severity": "High", "code_snippet": "query = 'SELECT * FROM users WHERE id=' + user_id"},
-    {"id": "V002", "type": "XSS", "cwe": "CWE-79", "language": "python",
-     "line": 27, "severity": "Medium", "code_snippet": "return '<p>' + comment + '</p>'"},
-    {"id": "V003", "type": "Command Injection", "cwe": "CWE-78", "language": "python",
-     "line": 40, "severity": "Critical", "code_snippet": "os.system('ping ' + host)"},
-    {"id": "V004", "type": "Hardcoded Secrets", "cwe": "CWE-798", "language": "python",
-     "line": 5, "severity": "High", "code_snippet": "API_KEY = 'sk-12345'"},
-    {"id": "V005", "type": "Buffer Overflow", "cwe": "CWE-120", "language": "python",
-     "line": 9, "severity": "High", "code_snippet": "..."},
-]
+import analyzer
+from backup_texts import BACKUP_TEXTS
 
-for finding in findings:
-    print(json.dumps(analyze_finding(finding), indent=2))
+SUPPORTED_TYPES = ["SQL Injection", "XSS", "Command Injection", "Hardcoded Secrets"]
+
+
+def make_finding(vuln_type, finding_id="V001"):
+    return {
+        "id": finding_id,
+        "type": vuln_type,
+        "cwe": "CWE-0",
+        "language": "python",
+        "line": 10,
+        "severity": "High",
+        "code_snippet": "example",
+    }
+
+
+@pytest.fixture
+def no_llm(monkeypatch):
+    """Make the LLM unavailable so the tests use the backup texts."""
+    monkeypatch.setattr(analyzer, "ask_llm", lambda finding: None)
+
+
+@pytest.mark.parametrize("vuln_type", SUPPORTED_TYPES)
+def test_supported_type_returns_three_fields(no_llm, vuln_type):
+    result = analyzer.analyze_finding(make_finding(vuln_type))
+    for field in ("impact", "explanation", "recommendation"):
+        assert isinstance(result[field], str)
+        assert result[field].strip() != ""
+
+
+def test_same_id_is_returned(no_llm):
+    result = analyzer.analyze_finding(make_finding("XSS", "V042"))
+    assert result["id"] == "V042"
+
+
+def test_unsupported_type_returns_error(no_llm):
+    result = analyzer.analyze_finding(make_finding("Buffer Overflow"))
+    assert "error" in result
+    assert "impact" not in result
+
+
+def test_backup_text_used_when_llm_fails(no_llm):
+    result = analyzer.analyze_finding(make_finding("SQL Injection"))
+    assert result["impact"] == BACKUP_TEXTS["SQL Injection"]["impact"]
+
+
+def test_llm_text_used_when_llm_works(monkeypatch):
+    fake = {"impact": "i", "explanation": "e", "recommendation": "r"}
+    monkeypatch.setattr(analyzer, "ask_llm", lambda finding: fake)
+    result = analyzer.analyze_finding(make_finding("SQL Injection"))
+    assert result == {
+        "id": "V001",
+        "impact": "i",
+        "explanation": "e",
+        "recommendation": "r",
+    }
+
+
+def test_backup_texts_cover_all_four_types():
+    assert set(BACKUP_TEXTS) == set(SUPPORTED_TYPES)
