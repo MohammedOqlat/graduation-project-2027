@@ -6,7 +6,9 @@
 #   1. Creates a small SQLite database file (scanix.db) with 3 tables.
 #   2. save_scan(...)  -> saves one scan and all its findings.
 #   3. get_scan(...)   -> reads one scan back with all its findings.
-#   4. Two helpers: calculate_score(...) and count_by_severity(...).
+#   4. save_analysis(...) -> saves the explanation (impact, explanation, recommendation)
+#                            of ONE finding. It is filled by Part 2 (Analysis).
+#   5. Three helpers: calculate_score(...), count_by_severity(...), get_latest_scan_id().
 #
 # SQLite is built into Python (the "sqlite3" module), so we install nothing.
 # The whole database is just ONE file on the disk.
@@ -143,15 +145,39 @@ def get_scan(scan_id):
         conn.close()
         return None
 
-    # Read all findings of this scan, ordered by line number.
+    # Read all findings of this scan, ordered by id.
+    # We saved them in the SAME order Detection gave them, and SQLite counts the ids
+    # upwards (1, 2, 3...), so ORDER BY id gives back that same order.
+    # This matters: Analysis answers are matched to the findings by POSITION.
     finding_rows = conn.execute(
-        "SELECT * FROM findings WHERE scan_id = ? ORDER BY line", (scan_id,)
+        "SELECT * FROM findings WHERE scan_id = ? ORDER BY id", (scan_id,)
     ).fetchall()                         # fetchall() gives a list of rows
     conn.close()
 
     scan = dict(scan_row)                                  # turn the row into a normal dictionary
     scan["findings"] = [dict(row) for row in finding_rows] # add the findings list inside it
     return scan
+
+
+def save_analysis(finding_db_id, impact, explanation, recommendation):
+    """Save the analysis of ONE finding.
+
+    finding_db_id is the id of the finding in OUR database (findings.id),
+    NOT the id Detection gave (like "V001").
+    If this finding already has an analysis, the old one is replaced by the new one.
+    """
+    conn = get_connection()
+
+    # INSERT OR REPLACE: add a new row, or overwrite the old row when this
+    # finding_id already exists (finding_id is the primary key of the analysis table).
+    conn.execute(
+        "INSERT OR REPLACE INTO analysis (finding_id, impact, explanation, recommendation) "
+        "VALUES (?, ?, ?, ?)",
+        (finding_db_id, impact, explanation, recommendation),
+    )
+
+    conn.commit()    # write the change to the file
+    conn.close()
 
 
 def get_latest_scan_id():

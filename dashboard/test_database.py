@@ -44,7 +44,7 @@ def test_save_and_get_scan():
     assert scan["filename"] == "fake_sample.py"       # the file name was stored
     assert scan["score"] == 55                        # the score was stored
     assert len(scan["findings"]) == 3                 # all 3 findings were stored
-    assert scan["findings"][0]["type"] == "Hardcoded Secrets"   # ordered by line: line 8 comes first
+    assert scan["findings"][0]["type"] == "Hardcoded Secrets"   # same order as Detection: line 8 comes first
     assert scan["findings"][0]["status"] == "Open"    # default status
 
 
@@ -57,3 +57,46 @@ def test_latest_scan_id():
     database.save_scan("a.py", FAKE_FINDINGS)
     second = database.save_scan("b.py", FAKE_FINDINGS)
     assert database.get_latest_scan_id() == second    # newest scan
+
+
+def read_analysis(finding_db_id):
+    # Small helper for the tests: read one row of the analysis table directly.
+    conn = database.get_connection()
+    row = conn.execute("SELECT * FROM analysis WHERE finding_id = ?", (finding_db_id,)).fetchone()
+    conn.close()
+    return row                                         # None when there is no analysis
+
+
+def test_findings_keep_detection_order():
+    # Lines are NOT increasing here (30 first, then 5). We must get the same order back.
+    findings = [dict(FAKE_FINDINGS[0], line=30), dict(FAKE_FINDINGS[1], line=5)]
+    scan = database.get_scan(database.save_scan("order.py", findings))
+    assert [f["line"] for f in scan["findings"]] == [30, 5]
+
+
+def test_save_analysis():
+    scan = database.get_scan(database.save_scan("a.py", FAKE_FINDINGS))
+    finding_db_id = scan["findings"][0]["id"]          # OUR database id (1), not "V001"
+
+    database.save_analysis(finding_db_id, "Key can be stolen", "The key is in the code", "Use environment variables")
+
+    row = read_analysis(finding_db_id)
+    assert row["impact"] == "Key can be stolen"
+    assert row["explanation"] == "The key is in the code"
+    assert row["recommendation"] == "Use environment variables"
+
+
+def test_save_analysis_replaces_the_old_one():
+    scan = database.get_scan(database.save_scan("a.py", FAKE_FINDINGS))
+    finding_db_id = scan["findings"][0]["id"]
+
+    database.save_analysis(finding_db_id, "old", "old", "old")
+    database.save_analysis(finding_db_id, "new", "new", "new")   # same finding again
+
+    assert read_analysis(finding_db_id)["impact"] == "new"       # the new one won
+
+
+def test_save_analysis_for_a_finding_that_does_not_exist():
+    # Foreign keys are ON, so SQLite must refuse an analysis for a missing finding.
+    with pytest.raises(Exception):
+        database.save_analysis(999, "x", "x", "x")
