@@ -1,6 +1,7 @@
 # analyzer.py
 import json
 import os
+import re
 
 from dotenv import load_dotenv
 
@@ -20,6 +21,29 @@ SYSTEM_PROMPT = (
 )
 
 
+def mask_secret(code_snippet):
+    """Hide the value of a secret so the real secret never leaves our machine."""
+    # Case 1: the value is inside quotes, for example API_KEY = "sk-live-123"
+    masked, count = re.subn(r"""(["'])(.*?)\1""", r"\1***\1", code_snippet)
+    if count:
+        return masked
+    # Case 2: no quotes, for example API_KEY = sk-live-123
+    return re.sub(r"([=:])\s*\S.*$", r"\1 ***", code_snippet)
+
+
+def build_message(finding):
+    """Build the text we send to the LLM. Secrets are masked first."""
+    code_snippet = str(finding.get("code_snippet", ""))
+    if finding["type"] == "Hardcoded Secrets":
+        code_snippet = mask_secret(code_snippet)
+    return (
+        "Vulnerability type: " + finding["type"] + "\n"
+        "CWE: " + str(finding.get("cwe", "")) + "\n"
+        "Line: " + str(finding.get("line", "")) + "\n"
+        "Code snippet: " + code_snippet
+    )
+
+
 def ask_llm(finding):
     """Ask the LLM for the analysis. Return a dict, or None if anything fails."""
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -29,12 +53,7 @@ def ask_llm(finding):
         import anthropic
 
         client = anthropic.Anthropic(api_key=api_key, timeout=20)
-        message = (
-            "Vulnerability type: " + finding["type"] + "\n"
-            "CWE: " + str(finding.get("cwe", "")) + "\n"
-            "Line: " + str(finding.get("line", "")) + "\n"
-            "Code snippet: " + str(finding.get("code_snippet", ""))
-        )
+        message = build_message(finding)
         response = client.messages.create(
             model=MODEL,
             max_tokens=500,
