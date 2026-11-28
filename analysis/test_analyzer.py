@@ -1,4 +1,7 @@
 # test_analyzer.py
+import sys
+import types
+
 import pytest
 
 import analyzer
@@ -63,3 +66,63 @@ def test_llm_text_used_when_llm_works(monkeypatch):
 
 def test_backup_texts_cover_all_four_types():
     assert set(BACKUP_TEXTS) == set(SUPPORTED_TYPES)
+
+
+SECRET = "sk-live-9f2a41c7e0b8"
+
+
+def secret_finding(snippet):
+    finding = make_finding("Hardcoded Secrets")
+    finding["code_snippet"] = snippet
+    return finding
+
+
+def test_mask_secret_hides_quoted_value():
+    masked = analyzer.mask_secret('API_KEY = "' + SECRET + '"')
+    assert SECRET not in masked
+    assert masked == 'API_KEY = "***"'
+
+
+def test_mask_secret_hides_unquoted_value():
+    masked = analyzer.mask_secret("API_KEY = " + SECRET)
+    assert SECRET not in masked
+    assert "***" in masked
+
+
+def test_message_for_llm_has_no_secret():
+    message = analyzer.build_message(secret_finding('API_KEY = "' + SECRET + '"'))
+    assert SECRET not in message
+    assert "***" in message
+
+
+def test_other_types_are_not_masked():
+    finding = make_finding("SQL Injection")
+    finding["code_snippet"] = "cur.execute('SELECT ' + name)"
+    message = analyzer.build_message(finding)
+    assert "cur.execute('SELECT ' + name)" in message
+
+
+def test_secret_is_not_sent_to_the_llm(monkeypatch):
+    """The text that reaches the (fake) LLM client must not contain the secret."""
+    sent = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.messages = self
+
+        def create(self, **kwargs):
+            sent["text"] = kwargs["messages"][0]["content"]
+            block = types.SimpleNamespace(
+                text='{"impact": "i", "explanation": "e", "recommendation": "r"}'
+            )
+            return types.SimpleNamespace(content=[block])
+
+    fake_module = types.SimpleNamespace(Anthropic=FakeClient)
+    monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    result = analyzer.ask_llm(secret_finding('API_KEY = "' + SECRET + '"'))
+
+    assert result is not None
+    assert SECRET not in sent["text"]
+    assert "***" in sent["text"]
